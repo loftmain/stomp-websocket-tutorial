@@ -24,8 +24,16 @@ import java.util.Map;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+
 @Controller
 public class FileWebSocketController {
+
+    private static final Logger logger = LoggerFactory.getLogger(FileWebSocketController.class);
 
     private static final int MAX_MONITORS_PER_USER = 5;
     private static final int MAX_TOTAL_MONITORS = 100;
@@ -52,6 +60,8 @@ public class FileWebSocketController {
     public void init() {
         // 오래된 모니터 정리 작업 시작
         cleanupScheduler.scheduleAtFixedRate(this::cleanupInactiveMonitors, 10, 10, TimeUnit.MINUTES);
+        logger.info("FileWebSocketController 초기화 완료 - 스케줄러 시작됨");
+        logger.info("15초마다 데이터 통계 로깅 스케줄러 설정됨");
     }
 
     @PreDestroy
@@ -381,5 +391,71 @@ public class FileWebSocketController {
             // 다른 사용자는 모든 라인 표시
             return true;
         }
+    }
+
+    /**
+     * 15초마다 ConcurrentHashMap과 스케줄러 데이터 통계 로깅
+     */
+    @Scheduled(fixedRate = 5000)
+    public void logDataStatistics() {
+        logger.info("데이터 통계 로깅 스케줄러 실행 중... (현재 시간: {})",
+                LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")));
+
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        String currentTime = LocalDateTime.now().format(formatter);
+
+        logger.info("======== 파일 웹소켓 데이터 통계 ({}) ========", currentTime);
+
+        // 활성 모니터 통계
+        logger.info("활성 모니터 수: {}", activeMonitors.size());
+        if (!activeMonitors.isEmpty()) {
+            logger.info("활성 모니터 목록:");
+            activeMonitors.forEach((key, monitor) -> {
+                String[] parts = key.split(":");
+                String filePath = parts[0];
+                String userId = parts.length > 1 ? parts[1] : "unknown";
+                logger.info("  - 파일: {}, 사용자: {}, 실행 상태: {}",
+                        filePath, userId, monitor.isRunning());
+            });
+        }
+
+        // 세션-사용자 매핑 통계
+        logger.info("활성 세션 수: {}", sessionUserMap.size());
+        if (!sessionUserMap.isEmpty() && sessionUserMap.size() < 10) { // 너무 많은 경우 상세 출력 제한
+            logger.info("세션-사용자 매핑:");
+            sessionUserMap.forEach((sessionId, userId) -> logger.info("  - 세션: {}, 사용자: {}", sessionId, userId));
+        }
+
+        // 사용자별 모니터 수 통계
+        logger.info("사용자별 활성 모니터 수:");
+        if (userMonitorCount.isEmpty()) {
+            logger.info("  - 활성 사용자 없음");
+        } else {
+            userMonitorCount.forEach((userId, count) -> logger.info("  - 사용자: {}, 모니터 수: {}", userId, count));
+        }
+
+        // 모니터 활동 시간 통계
+        logger.info("모니터 마지막 활동 시간:");
+        if (monitorLastActivity.isEmpty()) {
+            logger.info("  - 활동 기록 없음");
+        } else {
+            Instant now = Instant.now();
+            monitorLastActivity.forEach((key, lastActivity) -> {
+                long minutesAgo = java.time.Duration.between(lastActivity, now).toMinutes();
+                String formattedTime = LocalDateTime.ofInstant(lastActivity, ZoneId.systemDefault())
+                        .format(formatter);
+                logger.info("  - 모니터: {}, 마지막 활동: {} ({}분 전)",
+                        key, formattedTime, minutesAgo);
+            });
+        }
+
+        // 스케줄러 통계
+        logger.info("스케줄러 상태:");
+        logger.info("  - 메인 스케줄러: isShutdown={}, isTerminated={}",
+                scheduler.isShutdown(), scheduler.isTerminated());
+        logger.info("  - 정리 스케줄러: isShutdown={}, isTerminated={}",
+                cleanupScheduler.isShutdown(), cleanupScheduler.isTerminated());
+
+        logger.info("===============================================");
     }
 }
