@@ -21,10 +21,38 @@
       #file-content div {
         margin-bottom: 5px;
       }
+      .button-group {
+        margin-bottom: 20px;
+      }
+      select,
+      input {
+        margin-right: 10px;
+        padding: 5px;
+      }
+      label {
+        margin-right: 5px;
+      }
+      .error-message {
+        color: red;
+        background-color: #ffeeee;
+        padding: 10px;
+        margin: 10px 0;
+        border: 1px solid #ffaaaa;
+        border-radius: 5px;
+        display: none;
+      }
     </style>
   </head>
   <body>
     <h1>File Monitor</h1>
+    <div class="button-group">
+      <button id="start-connection">Start Connection</button>
+      <button id="stop-connection" disabled>Stop Connection</button>
+    </div>
+
+    <!-- 오류 메시지 표시 영역 추가 -->
+    <div id="error-container" class="error-message"></div>
+
     <form id="file-form">
       <label for="filePath">File Path:</label>
       <input
@@ -33,24 +61,122 @@
         placeholder="/path/to/file.txt"
         required
       />
-      <button type="submit">Start Monitoring</button>
+
+      <label for="userId">User ID:</label>
+      <select id="userId" required>
+        <option value="user01">user01 (Lines starting with P)</option>
+        <option value="user02">user02 (Lines starting with W)</option>
+        <option value="other">Other (All lines)</option>
+      </select>
+
+      <button type="submit" id="start-monitoring" disabled>
+        Start Monitoring
+      </button>
     </form>
     <h2>File Content:</h2>
     <div id="file-content"></div>
 
     <script>
       let stompClient = null;
+      let currentUserId = null;
+      let errorSubscription = null;
 
       // WebSocket 연결 설정
       function connect() {
         const socket = new SockJS("/gs-guide-websocket");
         stompClient = Stomp.over(socket);
 
-        stompClient.connect({}, () => {
-          console.log("Connected to WebSocket");
+        // 연결 시 디버그 로그 표시 끄기 (선택 사항)
+        stompClient.debug = null;
 
-          // 초기 파일 내용 수신
-          stompClient.subscribe("/topic/fileContent", (message) => {
+        stompClient.connect(
+          {},
+          () => {
+            console.log("Connected to WebSocket");
+
+            // 에러 메시지 숨기기
+            document.getElementById("error-container").style.display = "none";
+
+            // 버튼 상태 업데이트
+            document.getElementById("start-connection").disabled = true;
+            document.getElementById("stop-connection").disabled = false;
+            document.getElementById("start-monitoring").disabled = false;
+          },
+          (error) => {
+            // 연결 오류 처리
+            console.error("Connection error:", error);
+            showError("WebSocket 연결 오류: " + error);
+            disconnect();
+          }
+        );
+      }
+
+      // 오류 메시지 표시 함수
+      function showError(message) {
+        const errorContainer = document.getElementById("error-container");
+        errorContainer.textContent = message;
+        errorContainer.style.display = "block";
+      }
+
+      // WebSocket 연결 종료
+      function disconnect() {
+        if (stompClient !== null) {
+          // 현재 구독 중인 토픽들 해제
+          unsubscribeFromCurrentTopics();
+
+          // 연결 종료
+          stompClient.disconnect(() => {
+            console.log("Disconnected from WebSocket");
+          });
+          stompClient = null;
+          currentUserId = null;
+
+          // 버튼 상태 업데이트
+          document.getElementById("start-connection").disabled = false;
+          document.getElementById("stop-connection").disabled = true;
+          document.getElementById("start-monitoring").disabled = true;
+
+          // 내용 초기화
+          document.getElementById("file-content").innerHTML = "";
+        }
+      }
+
+      // 윈도우 종료 시 연결 종료 처리
+      window.addEventListener("beforeunload", function () {
+        disconnect();
+      });
+
+      // 사용자별 토픽 구독 관리를 위한 변수들
+      let fileContentSubscription = null;
+      let fileUpdateSubscription = null;
+
+      // 현재 구독 중인 토픽들 해제
+      function unsubscribeFromCurrentTopics() {
+        if (fileContentSubscription) {
+          fileContentSubscription.unsubscribe();
+          fileContentSubscription = null;
+        }
+
+        if (fileUpdateSubscription) {
+          fileUpdateSubscription.unsubscribe();
+          fileUpdateSubscription = null;
+        }
+
+        if (errorSubscription) {
+          errorSubscription.unsubscribe();
+          errorSubscription = null;
+        }
+      }
+
+      // 토픽 구독 함수
+      function subscribeToTopics(userId) {
+        // 기존 구독 해제
+        unsubscribeFromCurrentTopics();
+
+        // 새로운 사용자 ID로 구독
+        fileContentSubscription = stompClient.subscribe(
+          `/topic/fileContent/${userId}`,
+          (message) => {
             const contentDiv = document.getElementById("file-content");
             contentDiv.innerHTML = ""; // 기존 내용을 초기화
             const lines = JSON.parse(message.body);
@@ -59,10 +185,12 @@
               newLine.textContent = line;
               contentDiv.appendChild(newLine);
             });
-          });
+          }
+        );
 
-          // 실시간 파일 업데이트 수신
-          stompClient.subscribe("/topic/fileUpdate", (message) => {
+        fileUpdateSubscription = stompClient.subscribe(
+          `/topic/fileUpdate/${userId}`,
+          (message) => {
             const contentDiv = document.getElementById("file-content");
             const lines = JSON.parse(message.body);
             lines.forEach((line) => {
@@ -73,8 +201,18 @@
 
             // 스크롤을 맨 아래로 이동
             contentDiv.scrollTop = contentDiv.scrollHeight;
-          });
-        });
+          }
+        );
+
+        // 오류 토픽 구독
+        errorSubscription = stompClient.subscribe(
+          `/topic/error/${userId}`,
+          (message) => {
+            showError(message.body);
+          }
+        );
+
+        console.log(`Subscribed to topics for user: ${userId}`);
       }
 
       // 파일 모니터링 요청
@@ -83,17 +221,44 @@
         .addEventListener("submit", (event) => {
           event.preventDefault();
           const filePath = document.getElementById("filePath").value;
+          const userId = document.getElementById("userId").value;
 
           if (stompClient) {
-            stompClient.send("/app/readFile", {}, JSON.stringify({ filePath }));
-            console.log(`Monitoring started for file: ${filePath}`);
+            // 사용자 ID가 변경되었으면 새로 구독
+            if (currentUserId !== userId) {
+              subscribeToTopics(userId);
+              currentUserId = userId;
+            }
+
+            stompClient.send(
+              "/app/readFile",
+              {},
+              JSON.stringify({
+                filePath: filePath,
+                userId: userId,
+              })
+            );
+            console.log(
+              `Monitoring started for file: ${filePath} with user ID: ${userId}`
+            );
           } else {
             alert("WebSocket is not connected.");
           }
         });
 
-      // WebSocket 연결 시작
-      connect();
+      // Start Connection 버튼 클릭 이벤트
+      document
+        .getElementById("start-connection")
+        .addEventListener("click", () => {
+          connect();
+        });
+
+      // Stop Connection 버튼 클릭 이벤트
+      document
+        .getElementById("stop-connection")
+        .addEventListener("click", () => {
+          disconnect();
+        });
     </script>
   </body>
 </html>

@@ -1,23 +1,4 @@
-const stompClient = new StompJs.Client({
-  brokerURL: "ws://localhost:8080/gs-guide-websocket",
-});
-
-stompClient.onConnect = (frame) => {
-  setConnected(true);
-  console.log("Connected: " + frame);
-  stompClient.subscribe("/topic/greetings", (greeting) => {
-    showGreeting(JSON.parse(greeting.body).content);
-  });
-};
-
-stompClient.onWebSocketError = (error) => {
-  console.error("Error with websocket", error);
-};
-
-stompClient.onStompError = (frame) => {
-  console.error("Broker reported error: " + frame.headers["message"]);
-  console.error("Additional details: " + frame.body);
-};
+var stompClient = null;
 
 function setConnected(connected) {
   $("#connect").prop("disabled", connected);
@@ -27,33 +8,70 @@ function setConnected(connected) {
   } else {
     $("#conversation").hide();
   }
-  $("#greetings").html("");
+  $("#fileContent").html("");
 }
 
 function connect() {
-  stompClient.activate();
+  var socket = new SockJS("/gs-guide-websocket");
+  stompClient = Stomp.over(socket);
+  stompClient.connect({}, function (frame) {
+    setConnected(true);
+    console.log("Connected: " + frame);
+    stompClient.subscribe("/topic/fileContent", function (message) {
+      showFileContent(JSON.parse(message.body));
+    });
+    stompClient.subscribe("/topic/fileUpdate", function (message) {
+      appendFileContent(JSON.parse(message.body));
+    });
+  });
 }
 
 function disconnect() {
-  stompClient.deactivate();
+  if (stompClient !== null) {
+    stompClient.disconnect();
+  }
   setConnected(false);
   console.log("Disconnected");
 }
 
-function sendName() {
-  stompClient.publish({
-    destination: "/app/hello",
-    body: JSON.stringify({ name: $("#name").val() }),
-  });
+function readFile() {
+  var filePath = $("#filePath").val();
+  var userId = $("#userId").val(); // 사용자 ID 입력값 가져오기
+
+  stompClient.send(
+    "/app/readFile",
+    {},
+    JSON.stringify({
+      filePath: filePath,
+      userId: userId, // 사용자 ID 포함
+    })
+  );
 }
 
-function showGreeting(message) {
-  $("#greetings").append("<tr><td>" + message + "</td></tr>");
+function showFileContent(message) {
+  $("#fileContent").html("");
+  for (var i = 0; i < message.length; i++) {
+    $("#fileContent").append("<tr><td>" + message[i] + "</td></tr>");
+  }
+}
+
+function appendFileContent(message) {
+  for (var i = 0; i < message.length; i++) {
+    $("#fileContent").append("<tr><td>" + message[i] + "</td></tr>");
+  }
 }
 
 $(function () {
-  $("form").on("submit", (e) => e.preventDefault());
-  $("#connect").click(() => connect());
-  $("#disconnect").click(() => disconnect());
-  $("#send").click(() => sendName());
+  $("form").on("submit", function (e) {
+    e.preventDefault();
+  });
+  $("#connect").click(function () {
+    connect();
+  });
+  $("#disconnect").click(function () {
+    disconnect();
+  });
+  $("#send").click(function () {
+    readFile();
+  });
 });
