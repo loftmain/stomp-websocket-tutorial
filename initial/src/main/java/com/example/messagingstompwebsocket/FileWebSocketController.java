@@ -19,10 +19,14 @@ import java.nio.file.*;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +40,7 @@ public class FileWebSocketController {
     private static final Logger logger = LoggerFactory.getLogger(FileWebSocketController.class);
 
     // 고정된 단일 파일 경로 설정 (시스템에 맞게 경로 조정 필요)
-    private static final String MONITORED_FILE_PATH = "";
+    private static final String MONITORED_FILE_PATH = "/sw/s2otm/sms/IT.dat";
 
     @Autowired
     private SimpMessagingTemplate messagingTemplate;
@@ -52,6 +56,8 @@ public class FileWebSocketController {
 
     // 세션ID와 사용자ID를 매핑
     private final ConcurrentHashMap<String, String> sessionUserMap = new ConcurrentHashMap<>();
+
+    private final ConcurrentHashMap<String, List<String>> userServerMap = new ConcurrentHashMap<>();
 
     // 파일 WatchService 관련 변수
     private WatchService watchService;
@@ -89,6 +95,17 @@ public class FileWebSocketController {
 
             logger.info("FileWebSocketController 초기화 완료 - 단일 파일 모니터링 시스템 시작됨");
             logger.info("5초마다 데이터 통계 로깅 스케줄러 설정됨");
+
+            // 유저 서버 맵 예제 데이터 초기화
+            List<String> user01 = new ArrayList<>();
+            user01.add("itops05");
+            user01.add("GM-ITSM");
+
+            List<String> user02 = new ArrayList<>();
+            user02.add("itops05");
+
+            userServerMap.put("user01", user01);
+            userServerMap.put("user02", user02);
         } catch (IOException e) {
             logger.error("파일 모니터 초기화 중 오류 발생: {}", e.getMessage(), e);
         }
@@ -170,6 +187,13 @@ public class FileWebSocketController {
             // 사용자를 파일 구독자 목록에 추가
             fileSubscribers.add(userId);
 
+            // WatchService 재시작
+            if (fileSubscribers.size() == 1 && (watchServiceTask == null || watchServiceTask.isDone())) {
+                logger.info("구독자가 추가되어 WatchService를 재시작합니다.");
+                watchServiceStopFlag.set(false);
+                watchServiceTask = watchExecutor.submit(() -> pollWatchService());
+            }
+
             // 활동 시간 업데이트
             lastActivityTime = Instant.now();
 
@@ -190,6 +214,11 @@ public class FileWebSocketController {
             logger.info("WatchService 폴링 시작: {}", monitoredDirectory);
 
             while (!watchServiceStopFlag.get() && !Thread.currentThread().isInterrupted()) {
+                // 구독자가 없으면 풀링 중단
+                if (fileSubscribers.isEmpty()) {
+                    logger.info("구독자가 없어 WatchService 폴링 중지");
+                    break;
+                }
                 WatchKey key;
                 try {
                     // 100ms 타임아웃으로 poll 사용하여 중지 플래그 주기적 확인
@@ -303,6 +332,12 @@ public class FileWebSocketController {
             // 해당 사용자의 파일 구독 해제
             fileSubscribers.remove(userId);
             logger.info("사용자 {}의 연결이 종료되어 파일 구독을 해제했습니다.", userId);
+
+            // WatchService 중지
+            if (fileSubscribers.isEmpty()) {
+                logger.info("구독자가 없어 WatchService를 중지합니다.");
+                watchServiceStopFlag.set(true);
+            }
         }
     }
 
@@ -321,8 +356,11 @@ public class FileWebSocketController {
 
             for (int i = startIndex; i < allLines.size(); i++) {
                 String line = allLines.get(i);
-                if (shouldIncludeLine(line, userId)) {
-                    result.add(line);
+                if (!line.isEmpty()) {
+                    Map<String, String> parsedLogLine = parseLogLine(line);
+                    if (parsedLogLine != null && filterByUserServer(userId, parsedLogLine)) {
+                        result.add(line);
+                    }
                 }
             }
         } catch (IOException e) {
@@ -334,20 +372,51 @@ public class FileWebSocketController {
     }
 
     // 사용자 ID에 따라 라인을 필터링하는 헬퍼 메소드
-    private boolean shouldIncludeLine(String line, String userId) {
-        if (line == null || line.isEmpty()) {
+    private boolean filterByUserServer(String userId, Map<String, String> parsedLogLine) {
+        if (parsedLogLine == null) {
             return false;
         }
 
-        char firstChar = line.charAt(0);
+        userServerMap.putIfAbsent(userId, new ArrayList<>());
+        List<String> serverMap = userServerMap.get(userId);
+        String serverName = parsedLogLine.get("serverName");
+        String messageCode = parsedLogLine.get("messageCode");
+
+        char firstChar = messageCode.charAt(0);
         if ("user01".equals(userId)) {
-            return firstChar == 'P';
+            if (serverMap.contains(serverName) && firstChar == 'P') {
+                return true;
+            }
+            return false;
         } else if ("user02".equals(userId)) {
-            return firstChar == 'W';
+            if (serverMap.contains(serverName) && (firstChar == 'W' || firstChar == 'C')) {
+                return true;
+            }
+            return false;
         }
 
         // 다른 사용자는 모든 라인 표시
         return true;
+    }
+
+    private Map<String, String> parseLogLine(String line) {
+        // 정규 표현식으로 문자열 파싱
+        String regex = "^(.+?) (.+?) (.+?) (.+?) (.+?) (.+?) (.+)$";
+        Pattern pattern = Pattern.compile(regex);
+        Matcher matcher = pattern.matcher(line);
+
+        if (matcher.matches()) {
+            Map<String, String> parsedData = new HashMap<>();
+            parsedData.put("messageCode", matcher.group(1));
+            parsedData.put("coCode", matcher.group(2));
+            parsedData.put("date", matcher.group(3) + " " + matcher.group(4) + " " + matcher.group(5));
+            parsedData.put("serverName", matcher.group(6));
+            parsedData.put("message", matcher.group(7));
+
+            return parsedData;
+        }
+
+        return null;
     }
 
     // 파일 모니터링을 위한 내부 클래스 - 단일 모니터
@@ -428,8 +497,15 @@ public class FileWebSocketController {
                             List<String> filteredLines = new ArrayList<>();
 
                             for (String line : newContent.split("\\r?\\n")) {
-                                if (!line.isEmpty() && shouldIncludeLine(line, userId)) {
-                                    filteredLines.add(line);
+                                if (!line.isEmpty()) {
+                                    Map<String, String> parsedLogLine = parseLogLine(line);
+                                    if (parsedLogLine == null) {
+                                        logger.warn("로그 라인 파싱 오류: {}", line);
+                                    }
+                                    if (parsedLogLine != null && filterByUserServer(userId, parsedLogLine)) {
+                                        filteredLines.add(line);
+                                    }
+
                                 }
                             }
 
@@ -500,6 +576,24 @@ public class FileWebSocketController {
             logger.info("파일 모니터 상태: 없음");
         }
 
+        // WatchService 상태
+        if (watchServiceTask == null || watchServiceTask.isDone()) {
+            logger.info("WatchService 상태: 중지됨");
+        } else {
+            logger.info("WatchService 상태: 실행 중");
+        }
+        if (watchServiceStopFlag.get()) {
+            logger.info("WatchService 중지 플래그: 설정됨");
+        } else {
+            logger.info("WatchService 중지 플래그: 해제됨");
+        }
+        if (watchService != null) {
+            logger.info("WatchService 등록된 디렉토리: {}", monitoredDirectory);
+        } else {
+            logger.info("WatchService 등록된 디렉토리: 없음");
+        }
+
         logger.info("===============================================");
     }
+
 }
