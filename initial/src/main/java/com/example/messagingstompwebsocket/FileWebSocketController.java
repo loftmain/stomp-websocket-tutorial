@@ -40,7 +40,7 @@ public class FileWebSocketController {
     private static final Logger logger = LoggerFactory.getLogger(FileWebSocketController.class);
 
     // 고정된 단일 파일 경로 설정 (시스템에 맞게 경로 조정 필요)
-    private static final String MONITORED_FILE_PATH = "/sw/s2otm/sms/IT.dat";
+    private static final String MONITORED_FILE_PATH = "/Users/ijinjae/Documents/code/clang/s2o/sms/IT.dat";
 
     @Autowired
     private SimpMessagingTemplate messagingTemplate;
@@ -222,7 +222,7 @@ public class FileWebSocketController {
 
             while (!watchServiceStopFlag.get() && !Thread.currentThread().isInterrupted()) {
                 // 구독자가 없으면 풀링 중단
-                if (fileSubscribers.isEmpty()) {
+                if (sessionUserMap.isEmpty() || fileSubscribers.isEmpty()) {
                     logger.info("구독자가 없어 WatchService 폴링 중지");
                     break;
                 }
@@ -336,12 +336,16 @@ public class FileWebSocketController {
         String userId = sessionUserMap.remove(sessionId);
 
         if (userId != null) {
+            userServerMap.remove(userId);
+            logger.info("세션 {}의 연결이 종료되었습니다. 사용자: {}", sessionId, userId);
             // 해당 사용자의 파일 구독 해제
             fileSubscribers.remove(userId);
             logger.info("사용자 {}의 연결이 종료되어 파일 구독을 해제했습니다.", userId);
 
             // WatchService 중지
-            if (fileSubscribers.isEmpty()) {
+            if (sessionUserMap.isEmpty() || fileSubscribers.isEmpty()) {
+                sessionUserMap.clear();
+                fileSubscribers.clear();
                 logger.info("구독자가 없어 WatchService를 중지합니다.");
                 watchServiceStopFlag.set(true);
             }
@@ -564,7 +568,8 @@ public class FileWebSocketController {
         // 구독자 목록
         if (!fileSubscribers.isEmpty()) {
             logger.info("구독자 목록:");
-            fileSubscribers.forEach(userId -> logger.info("  - 사용자: {}", userId));
+            fileSubscribers
+                    .forEach(userId -> logger.info("  - 사용자: {}", userId + " (" + userServerMap.get(userId) + ")"));
         }
 
         // 세션-사용자 매핑 통계
