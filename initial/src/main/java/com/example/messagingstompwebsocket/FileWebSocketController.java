@@ -77,6 +77,13 @@ public class FileWebSocketController {
                 return;
             }
 
+            // TODO: Timezone 설정
+            // TODO: backend coCode 불러오기
+            // TODO: 라이센스 확인
+            // TODO: INPUT IP CHECK
+            // 인증 권한 체크 ->
+            // 필터링 있음 / 필터링 없음 / ITSM 콘솔 권한
+
             monitoredDirectory = path.getParent();
 
             // 파일 모니터 생성
