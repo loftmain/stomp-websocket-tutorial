@@ -19,14 +19,10 @@ import java.nio.file.*;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -364,9 +360,13 @@ public class FileWebSocketController {
             for (int i = startIndex; i < allLines.size(); i++) {
                 String line = allLines.get(i);
                 if (!line.isEmpty()) {
-                    Map<String, String> parsedLogLine = parseLogLine(line);
-                    if (parsedLogLine != null && filterByUserServer(userId, parsedLogLine)) {
+                    ConsoleLog log = new ConsoleLog(line);
+                    if (userId.equals("itops01") && logNoFilterUseConsole(log)) {
                         result.add(line);
+                    } else {
+                        if (logFilterUseConsole(userId, "ITOPS", log)) {
+                            result.add(line);
+                        }
                     }
                 }
             }
@@ -378,53 +378,63 @@ public class FileWebSocketController {
         return result;
     }
 
-    // 사용자 ID에 따라 라인을 필터링하는 헬퍼 메소드
-    private boolean filterByUserServer(String userId, Map<String, String> parsedLogLine) {
-        if (parsedLogLine == null) {
+    // 일반 콘솔, 필터링 있음
+    private boolean logFilterUseConsole(String userId, String coCode, ConsoleLog log) {
+        if (log.isInValid()) {
             return false;
         }
 
         userServerMap.putIfAbsent(userId, new ArrayList<>());
         List<String> serverMap = userServerMap.get(userId);
-        String serverName = parsedLogLine.get("serverName");
-        String messageCode = parsedLogLine.get("messageCode");
+        String serverName = log.getServerName();
+        String messageCode = log.getMessageCode();
+        String logCoCode = log.getCoCode();
+        char messageCodeType = messageCode.charAt(0);
 
-        char firstChar = messageCode.charAt(0);
-        if ("user01".equals(userId)) {
-            if (serverMap.contains(serverName) && firstChar == 'P') {
-                return true;
-            }
+        if (messageCodeType == 'G')
             return false;
-        } else if ("user02".equals(userId)) {
-            if (serverMap.contains(serverName) && (firstChar == 'W' || firstChar == 'C')) {
-                return true;
-            }
+
+        if (messageCodeType == 'p' && messageCode.charAt(5) == '1')
+            return false;
+
+        if (messageCodeType == 'P'
+                && (messageCode.substring(0, 4).equals("PAVI") || messageCode.substring(0, 4).equals("POSI")))
+            return false;
+
+        if (!logCoCode.equals(coCode))
+            return false;
+
+        if (serverMap.contains(serverName)) {
+            return true;
+        }
+
+        return false;
+
+    }
+
+    // 일반 콘솔, 필터링 없음
+    private boolean logNoFilterUseConsole(ConsoleLog log) {
+        if (log.isInValid()) {
             return false;
         }
 
-        // 다른 사용자는 모든 라인 표시
+        String messageCode = log.getMessageCode();
+        char messageCodeType = messageCode.charAt(0);
+
+        if (messageCodeType == 'G')
+            return false;
+
+        if (messageCodeType == 'p' && messageCode.charAt(5) == '1')
+            return false;
+
+        if (messageCodeType == 'P'
+                && (messageCode.substring(0, 4).equals("PAVI") || messageCode.substring(0, 4).equals("POSI")))
+            return false;
+
         return true;
     }
 
-    private Map<String, String> parseLogLine(String line) {
-        // 정규 표현식으로 문자열 파싱
-        String regex = "^(.+?) (.+?) (.+?) (.+?) (.+?) (.+?) (.+)$";
-        Pattern pattern = Pattern.compile(regex);
-        Matcher matcher = pattern.matcher(line);
-
-        if (matcher.matches()) {
-            Map<String, String> parsedData = new HashMap<>();
-            parsedData.put("messageCode", matcher.group(1));
-            parsedData.put("coCode", matcher.group(2));
-            parsedData.put("date", matcher.group(3) + " " + matcher.group(4) + " " + matcher.group(5));
-            parsedData.put("serverName", matcher.group(6));
-            parsedData.put("message", matcher.group(7));
-
-            return parsedData;
-        }
-
-        return null;
-    }
+    // ITSM 콘솔 모드
 
     // 파일 모니터링을 위한 내부 클래스 - 단일 모니터
     private class FileMonitor {
@@ -505,12 +515,16 @@ public class FileWebSocketController {
 
                             for (String line : newContent.split("\\r?\\n")) {
                                 if (!line.isEmpty()) {
-                                    Map<String, String> parsedLogLine = parseLogLine(line);
-                                    if (parsedLogLine == null) {
+                                    ConsoleLog log = new ConsoleLog(line);
+                                    if (log.isInValid()) {
                                         logger.warn("로그 라인 파싱 오류: {}", line);
                                     }
-                                    if (parsedLogLine != null && filterByUserServer(userId, parsedLogLine)) {
+                                    if (userId.equals("itops01") && logNoFilterUseConsole(log)) {
                                         filteredLines.add(line);
+                                    } else {
+                                        if (logFilterUseConsole(userId, "ITOPS", log)) {
+                                            filteredLines.add(line);
+                                        }
                                     }
 
                                 }
@@ -547,6 +561,7 @@ public class FileWebSocketController {
                 }
             }
         }
+
     }
 
     /**
